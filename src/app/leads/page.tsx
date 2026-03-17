@@ -1,27 +1,67 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Navbar from '@/components/Navbar';
-import { supabase } from '@/lib/supabase';
-import { Mail, Check, X, Bookmark, Download, Trash2, ExternalLink } from 'lucide-react';
+import { Bookmark, Download, Trash2 } from 'lucide-react';
 
 export default function LeadsPage() {
     const [leads, setLeads] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        async function fetchLeads() {
-            const { data, error } = await supabase
-                .from('leads')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            if (!error && data) {
-                setLeads(data);
+        // Load leads from localStorage on mount
+        const savedLeads = localStorage.getItem('findreach_leads');
+        if (savedLeads) {
+            try {
+                setLeads(JSON.parse(savedLeads));
+            } catch (e) {
+                console.error("Failed to parse saved leads", e);
             }
-            setIsLoading(false);
         }
-        fetchLeads();
+        setIsLoading(false);
     }, []);
+
+    const deleteLead = (e: React.MouseEvent, email: string) => {
+        e.stopPropagation();
+        const updatedLeads = leads.filter(l => l.email !== email);
+        setLeads(updatedLeads);
+        localStorage.setItem('findreach_leads', JSON.stringify(updatedLeads));
+    };
+
+    const exportToCsv = () => {
+        if (leads.length === 0) return;
+        
+        const headers = ["First Name", "Last Name", "Domain", "Email", "Status", "Saved At"];
+        const csvContent = [
+            headers.join(","),
+            ...leads.map(lead => [
+                `"${lead.firstName || ''}"`,
+                `"${lead.lastName || ''}"`,
+                `"${lead.domain || ''}"`,
+                `"${lead.email || ''}"`,
+                `"${lead.status || ''}"`,
+                `"${lead.savedAt || new Date().toISOString()}"`
+            ].join(","))
+        ].join("\n");
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", `findreach_leads_${new Date().toISOString().split('T')[0]}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    if (isLoading) {
+        return (
+            <main className="min-h-screen bg-gray-50/30">
+                <Navbar />
+                <div className="max-w-7xl mx-auto px-4 py-12 text-center opacity-50">Loading...</div>
+            </main>
+        );
+    }
 
     return (
         <main className="min-h-screen bg-gray-50/30">
@@ -31,9 +71,13 @@ export default function LeadsPage() {
                 <div className="flex justify-between items-end mb-8">
                     <div>
                         <h1 className="text-3xl font-extrabold text-gray-900 mb-2">My Leads</h1>
-                        <p className="text-gray-600">Manage and export your saved email addresses.</p>
+                        <p className="text-gray-600">Manage and export your locally saved email addresses.</p>
                     </div>
-                    <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-bold text-gray-700 hover:bg-gray-50 transition-all shadow-sm">
+                    <button 
+                        onClick={exportToCsv}
+                        disabled={leads.length === 0}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-bold text-gray-700 hover:bg-gray-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
                         <Download className="w-4 h-4" /> Export CSV
                     </button>
                 </div>
@@ -49,33 +93,32 @@ export default function LeadsPage() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white/50">
-                            {leads.length > 0 ? leads.map((lead) => (
-                                <tr key={lead.id} className="hover:bg-brand-50/30 transition-colors group">
+                            {leads.length > 0 ? leads.map((lead, idx) => (
+                                <tr key={lead.email + idx} className="hover:bg-brand-50/30 transition-colors group">
                                     <td className="px-6 py-6">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 brand-gradient rounded-full flex items-center justify-center text-white font-bold text-sm">
-                                                {lead.first_name?.[0]}{lead.last_name?.[0]}
+                                                {lead.firstName?.[0] || '?'}{lead.lastName?.[0] || '?'}
                                             </div>
                                             <div>
-                                                <p className="font-bold text-gray-900">{lead.first_name} {lead.last_name}</p>
-                                                <p className="text-xs text-gray-500 font-medium">{lead.company_domain}</p>
+                                                <p className="font-bold text-gray-900">{lead.firstName} {lead.lastName}</p>
+                                                <p className="text-xs text-gray-500 font-medium">{lead.domain}</p>
                                             </div>
                                         </div>
                                     </td>
                                     <td className="px-6 py-6 font-medium text-gray-700">{lead.email}</td>
                                     <td className="px-6 py-6">
-                                        <span className={`px-3 py-1 rounded-full text-xs font-bold border ${lead.status === 'valid' ? 'bg-green-50 text-green-600 border-green-100' :
-                                                'bg-amber-50 text-amber-600 border-amber-100'
-                                            }`}>
-                                            {lead.status === 'valid' ? 'Deliverable' : 'Risky'}
+                                        <span className={`px-3 py-1 rounded-full text-xs font-bold border ${strToStatusColor(lead.status)}`}>
+                                            {lead.status === 'valid' ? 'Deliverable' : lead.status === 'risky' ? 'Risky' : 'Unknown'}
                                         </span>
                                     </td>
                                     <td className="px-6 py-6 text-right">
                                         <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-brand-500 shadow-sm border border-transparent hover:border-gray-100">
-                                                <ExternalLink className="w-4 h-4" />
-                                            </button>
-                                            <button className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-red-500 shadow-sm border border-transparent hover:border-gray-100">
+                                            <button 
+                                                onClick={(e) => deleteLead(e, lead.email)}
+                                                className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-red-500 shadow-sm border border-transparent hover:border-gray-100"
+                                                title="Remove lead"
+                                            >
                                                 <Trash2 className="w-4 h-4" />
                                             </button>
                                         </div>
@@ -98,4 +141,11 @@ export default function LeadsPage() {
             </div>
         </main>
     );
+}
+
+function strToStatusColor(statusRaw: string) {
+    const status = statusRaw?.toLowerCase();
+    if (status === 'valid') return 'bg-green-50 text-green-600 border-green-100';
+    if (status === 'risky') return 'bg-amber-50 text-amber-600 border-amber-100';
+    return 'bg-gray-50 text-gray-600 border-gray-100';
 }

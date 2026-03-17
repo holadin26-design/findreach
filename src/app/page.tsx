@@ -1,6 +1,7 @@
 import Navbar from "@/components/Navbar";
 import { Search, ShieldCheck, Zap, ArrowRight, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
+import BulkTools from "@/components/BulkTools";
 
 export default function Home() {
     return (
@@ -39,6 +40,11 @@ export default function Home() {
                         <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-brand-500" /> Pattern Generation</div>
                         <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-brand-500" /> 50 Free Credits</div>
                     </div>
+                </div>
+
+                {/* Bulk Tools Integrated on Landing Page */}
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-12 relative z-10">
+                    <BulkTools />
                 </div>
             </section>
 

@@ -3,7 +3,6 @@ import { useState, useRef } from 'react';
 import Navbar from '@/components/Navbar';
 import { Search, Loader2, Check, X, AlertTriangle, Copy, UserPlus, Mail } from 'lucide-react';
 import { EmailPatternService } from '@/services/emailPatternService';
-import { supabase } from '@/lib/supabase';
 
 type StatusType = 'valid' | 'invalid' | 'risky' | 'unknown';
 type EmailResult = { email: string; status: StatusType };
@@ -36,6 +35,7 @@ export default function FinderPage() {
         const patterns = EmailPatternService.generatePatterns(firstName, lastName, domain);
         setResults(patterns.map(p => ({ email: p, status: 'unknown' as StatusType })));
 
+        let foundValid = false;
         for (const pattern of patterns) {
             if (controller.signal.aborted) break;
             try {
@@ -47,6 +47,7 @@ export default function FinderPage() {
                 });
                 const data = await response.json();
                 if (!controller.signal.aborted) {
+                    if (data.status === 'valid') foundValid = true;
                     setResults(prev => prev.map(r =>
                         r.email === pattern ? { ...r, status: (data.status as StatusType) || 'unknown' } : r
                     ));
@@ -57,22 +58,58 @@ export default function FinderPage() {
             }
         }
 
+        // Fallback to info@domain if none found valid
+        if (!foundValid && !controller.signal.aborted) {
+            const fallbackEmail = `info@${domain}`;
+            setResults(prev => [...prev, { email: fallbackEmail, status: 'unknown' }]);
+
+            try {
+                const response = await fetch('/api/verify', {
+                    method: 'POST',
+                    body: JSON.stringify({ email: fallbackEmail }),
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                });
+                const data = await response.json();
+                if (!controller.signal.aborted) {
+                    setResults(prev => prev.map(r =>
+                        r.email === fallbackEmail ? { ...r, status: (data.status as StatusType) || 'unknown' } : r
+                    ));
+                }
+            } catch (err: any) {
+                console.error('Fallback verification failed for:', fallbackEmail, err);
+            }
+        }
+
         if (!controller.signal.aborted) {
             setIsSearching(false);
         }
     };
 
     const saveLead = async (lead: EmailResult) => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) { alert('Please login to save leads'); return; }
-
-        const { error } = await supabase.from('leads').insert({
-            user_id: user.id, first_name: firstName, last_name: lastName,
-            email: lead.email, company_domain: domain, status: lead.status
-        });
-
-        if (error) alert('Error saving lead: ' + error.message);
-        else setSavedEmails(prev => new Set(prev).add(lead.email));
+        try {
+            const savedLeads = JSON.parse(localStorage.getItem('findreach_leads') || '[]');
+            
+            // Avoid duplicates
+            if (!savedLeads.some((l: any) => l.email === lead.email)) {
+                const newLead = {
+                    firstName,
+                    lastName,
+                    domain,
+                    email: lead.email,
+                    status: lead.status,
+                    savedAt: new Date().toISOString()
+                };
+                
+                const updatedLeads = [newLead, ...savedLeads];
+                localStorage.setItem('findreach_leads', JSON.stringify(updatedLeads));
+            }
+            
+            setSavedEmails(prev => new Set(prev).add(lead.email));
+        } catch (e) {
+            console.error("Failed to save lead", e);
+            alert('Failed to save lead locally.');
+        }
     };
 
     const validEmails = results.filter(r => r.status === 'valid');

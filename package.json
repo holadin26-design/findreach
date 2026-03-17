@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "latest",
-    "@supabase/supabase-js": "latest",
     "clsx": "latest",
     "lucide-react": "latest",
     "next": "latest",
