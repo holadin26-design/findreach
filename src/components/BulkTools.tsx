@@ -65,101 +65,101 @@ export default function BulkTools() {
             status: 'pending'
         })));
 
+        const CONCURRENCY = 5;
+        const activeTasks = new Set<Promise<void>>();
+
         for (let i = 0; i < parsedTargets.length; i++) {
             if (controller.signal.aborted) break;
 
-            // Reset skip flag for the new target
-            skipCurrentRef.current = false;
+            const targetIndex = i;
+            const target = parsedTargets[targetIndex]!;
 
-            const target = parsedTargets[i]!;
+            const task = (async () => {
+                // Add a small stagger delay based on index to avoid hitting the same domain/MX simultaneously
+                await new Promise(resolve => setTimeout(resolve, (targetIndex % CONCURRENCY) * 500));
 
-            // Generate patterns
-            const patterns = EmailPatternService.generatePatterns(target.firstName, target.lastName, target.domain);
-            let foundValid = false;
+                // Generate patterns
+                const patterns = EmailPatternService.generatePatterns(target.firstName, target.lastName, target.domain);
+                let bestResult: BulkResult | null = null;
 
-            // Test patterns one by one for this target
-            for (const pattern of patterns) {
-                if (controller.signal.aborted) break;
-                if (skipCurrentRef.current) {
-                    setFinderResults(prev => prev.map(r => r.id === `f-${i}` ? { ...r, email: 'Skipped by user', status: 'skipped' } : r));
-                    break; // break pattern loop, move to next target
-                }
+                // Test patterns one by one for this target
+                for (const pattern of patterns) {
+                    if (controller.signal.aborted) break;
 
-                // Update UI to show what we're currently checking
-                setFinderResults(prev => prev.map(r => r.id === `f-${i}` ? { ...r, email: `Checking ${pattern}...`, status: 'unknown' } : r));
+                    // Update UI to show what we're currently checking, but preserve best status if we have one
+                    setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? { 
+                        ...r, 
+                        email: `Checking ${pattern}...`, 
+                        status: bestResult ? bestResult.status : 'unknown' 
+                    } : r));
 
-                try {
-                    const response = await fetch('/api/verify', {
-                        method: 'POST',
-                        body: JSON.stringify({ email: pattern }),
-                        headers: { 'Content-Type': 'application/json' },
-                        signal: controller.signal,
-                    });
-                    const data = await response.json();
-
-                    if (data.status === 'valid') {
-                        // Boom, found it.
-                        setFinderResults(prev => prev.map(r => r.id === `f-${i}` ? { ...r, email: pattern, status: 'valid' } : r));
-                        foundValid = true;
-                        break;
-                    } else if (data.status === 'risky') {
-                        // Save risky and keep checking, but if nothing better is found this is our fallback. We'll simplify to just keeping the first risky if no valid.
-                        setFinderResults(prev => {
-                            const existing = prev.find(x => x.id === `f-${i}`);
-                            if (existing?.status !== 'risky') {
-                                return prev.map(r => r.id === `f-${i}` ? { ...r, email: pattern, status: 'risky' } : r);
-                            }
-                            return prev;
+                    try {
+                        const response = await fetch('/api/verify', {
+                            method: 'POST',
+                            body: JSON.stringify({ email: pattern }),
+                            headers: { 'Content-Type': 'application/json' },
+                            signal: controller.signal,
                         });
-                    }
-                } catch (err: any) {
-                    if (err.name === 'AbortError') break;
-                }
-            }
+                        const data = await response.json();
 
-            // Once patterns are exhausted, if we never found valid and the status isn't already risky from a previous hit
-            if (!foundValid && !skipCurrentRef.current) {
-                const fallbackEmail = `info@${target.domain}`;
-                setFinderResults(prev => prev.map(r => r.id === `f-${i}` ? { ...r, email: `Checking fallback ${fallbackEmail}...`, status: 'unknown' } : r));
-
-                try {
-                    const response = await fetch('/api/verify', {
-                        method: 'POST',
-                        body: JSON.stringify({ email: fallbackEmail }),
-                        headers: { 'Content-Type': 'application/json' },
-                        signal: controller.signal,
-                    });
-                    const data = await response.json();
-
-                    if (data.status === 'valid') {
-                        setFinderResults(prev => prev.map(r => r.id === `f-${i}` ? { ...r, email: fallbackEmail, status: 'valid' } : r));
-                    } else {
-                        // If fallback also fails, mark as invalid (unless already risky)
-                        setFinderResults(prev => {
-                            const existing = prev.find(x => x.id === `f-${i}`);
-                            if (existing && existing.status === 'unknown') {
-                                return prev.map(r => r.id === `f-${i}` ? { ...r, email: 'No valid email found', status: 'invalid' } : r);
+                        if (data.status === 'valid') {
+                            const result: BulkResult = { id: `f-${targetIndex}`, input: target.original, email: pattern, status: 'valid' };
+                            setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? result : r));
+                            bestResult = result;
+                            break;
+                        } else if (data.status === 'risky') {
+                            if (!bestResult || bestResult.status !== 'valid') {
+                                const result: BulkResult = { id: `f-${targetIndex}`, input: target.original, email: pattern, status: 'risky' };
+                                setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? result : r));
+                                bestResult = result;
                             }
-                            return prev;
-                        });
-                    }
-                } catch (err: any) {
-                    console.error('Bulk fallback verification failed for:', fallbackEmail, err);
-                    setFinderResults(prev => {
-                        const existing = prev.find(x => x.id === `f-${i}`);
-                        if (existing && existing.status === 'unknown') {
-                            return prev.map(r => r.id === `f-${i}` ? { ...r, email: 'No valid email found', status: 'invalid' } : r);
                         }
-                        return prev;
-                    });
+                    } catch (err: any) {
+                        if (err.name === 'AbortError') break;
+                    }
                 }
-            } else if (skipCurrentRef.current) {
-                // skip logic already handled inside pattern loop, but ensuring state is correct if somehow missed
+
+                // Fallback check if no valid/risky found
+                if (!bestResult && !controller.signal.aborted) {
+                    const fallbackEmail = `info@${target.domain}`;
+                    setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? { ...r, email: `Checking fallback ${fallbackEmail}...`, status: 'unknown' } : r));
+
+                    try {
+                        const response = await fetch('/api/verify', {
+                            method: 'POST',
+                            body: JSON.stringify({ email: fallbackEmail }),
+                            headers: { 'Content-Type': 'application/json' },
+                            signal: controller.signal,
+                        });
+                        const data = await response.json();
+
+                        if (data.status === 'valid' || data.status === 'risky') {
+                            setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? { ...r, email: fallbackEmail, status: data.status } : r));
+                        } else {
+                            setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? { ...r, email: 'No valid email found', status: 'invalid' } : r));
+                        }
+                    } catch (err: any) {
+                        setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? { ...r, email: 'No valid email found', status: 'invalid' } : r));
+                    }
+                } else if (bestResult) {
+                    // Ensure the final best result is displayed correctly
+                    setFinderResults(prev => prev.map(r => r.id === `f-${targetIndex}` ? bestResult! : r));
+                }
+            })();
+
+
+            activeTasks.add(task);
+            task.finally(() => activeTasks.delete(task));
+
+            if (activeTasks.size >= CONCURRENCY) {
+                await Promise.race(activeTasks);
             }
         }
 
+        await Promise.all(activeTasks);
         if (!controller.signal.aborted) setIsFinding(false);
     };
+
 
     const handleSkipCurrent = () => {
         skipCurrentRef.current = true;
@@ -193,30 +193,50 @@ export default function BulkTools() {
             status: 'pending'
         })));
 
+        const CONCURRENCY = 5;
+        const activeTasks = new Set<Promise<void>>();
+
         for (let i = 0; i < uniqueEmails.length; i++) {
             if (controller.signal.aborted) break;
-            const email = uniqueEmails[i];
 
-            setValidatorResults(prev => prev.map(r => r.id === `v-${i}` ? { ...r, status: 'unknown' } : r));
+            const emailIndex = i;
+            const email = uniqueEmails[emailIndex];
 
-            try {
-                const response = await fetch('/api/verify', {
-                    method: 'POST',
-                    body: JSON.stringify({ email: email }),
-                    headers: { 'Content-Type': 'application/json' },
-                    signal: controller.signal,
-                });
-                const data = await response.json();
+            const task = (async () => {
+                // Stagger delay for multiple emails
+                await new Promise(resolve => setTimeout(resolve, (emailIndex % CONCURRENCY) * 200));
 
-                setValidatorResults(prev => prev.map(r => r.id === `v-${i}` ? { ...r, status: data.status } : r));
-            } catch (err: any) {
-                if (err.name === 'AbortError') break;
-                setValidatorResults(prev => prev.map(r => r.id === `v-${i}` ? { ...r, status: 'invalid' } : r));
+                setValidatorResults(prev => prev.map(r => r.id === `v-${emailIndex}` ? { ...r, status: 'unknown' } : r));
+
+                try {
+                    const response = await fetch('/api/verify', {
+                        method: 'POST',
+                        body: JSON.stringify({ email: email }),
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: controller.signal,
+                    });
+                    const data = await response.json();
+
+                    setValidatorResults(prev => prev.map(r => r.id === `v-${emailIndex}` ? { ...r, status: data.status } : r));
+                } catch (err: any) {
+                    if (err.name === 'AbortError') return;
+                    setValidatorResults(prev => prev.map(r => r.id === `v-${emailIndex}` ? { ...r, status: 'invalid' } : r));
+                }
+            })();
+
+
+            activeTasks.add(task);
+            task.finally(() => activeTasks.delete(task));
+
+            if (activeTasks.size >= CONCURRENCY) {
+                await Promise.race(activeTasks);
             }
         }
 
+        await Promise.all(activeTasks);
         if (!controller.signal.aborted) setIsValidating(false);
     };
+
 
 
     const exportCSV = (results: BulkResult[], filename: string) => {
@@ -278,14 +298,7 @@ export default function BulkTools() {
                         />
 
                         <div className="flex justify-end gap-3">
-                            {isFinding && (
-                                <button
-                                    onClick={handleSkipCurrent}
-                                    className="px-6 py-3 bg-white text-gray-700 border border-gray-200 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-50 transition-all"
-                                >
-                                    Skip Current Lead
-                                </button>
-                            )}
+
                             <button
                                 onClick={handleBulkFind}
                                 disabled={isFinding || !finderInput.trim()}
